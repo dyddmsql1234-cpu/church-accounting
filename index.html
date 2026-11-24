@@ -6,6 +6,7 @@
 <title>번동성결교회 교사 회계장부</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.57.4/dist/umd/supabase.js"></script>
 <style>
 :root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);
 --bg:#eef2f7;--card:#fff;--ink:#1b2433;--mute:#667085;--line:#e2e8f0;--pri:#2f4fa3;--priS:#e6ecfb;--inc:#13795b;--incS:#ddf3ea;--exp:#c2410c;--expS:#fde9dc;--warn:#b7791f;--bar:#e8ecf3}
@@ -65,17 +66,18 @@ td.ok{color:var(--inc);font-weight:700;cursor:pointer}td.no{color:var(--line);cu
 </head>
 <body>
 <div class="wrap">
-  <div class="top"><div><h1>번동성결교회 교사 회계장부</h1><small>주일학교 · 학생회</small></div><div style="text-align:right"><button class="b g" id="adm" style="padding:8px 12px;font-size:13px" onclick="toggleAdmin()"></button><br><small id="today"></small></div></div>
+  <div class="top"><div><h1>번동성결교회 교사 회계장부</h1><small>주일학교 · 학생회</small></div><div style="text-align:right"><button class="b g" id="adm" style="padding:8px 12px;font-size:13px" onclick="toggleAdmin()"></button><br><small id="today"></small><br><button class="l" onclick="logout()">로그아웃</button></div></div>
   <nav id="nav"></nav>
   <div id="app"></div>
 </div>
+<div id="login" style="position:fixed;inset:0;background:var(--bg);z-index:40;display:flex;align-items:center;justify-content:center;padding:16px"><div class="card" style="max-width:380px;width:100%;margin:0"><h2>번동성결교회 교사 회계장부</h2><div class="f" style="grid-template-columns:1fr"><label>이메일<input id="lg_e" type="email" autocomplete="username"></label><label>비밀번호<input id="lg_p" type="password" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()"></label><button class="b" onclick="doLogin()">로그인</button><small id="lg_m" class="exp"></small></div></div></div>
 <div id="modal" onclick="this.style.display='none'"><img id="mimg" alt="영수증 원본"></div>
 <script>
 const KEY='church-acct-v1',CATS=['전도비','행사비','주일 간식비'],ICATS=['교사회비','특별후원금','기타수입'];
 const SUB={'전도비':['전도물품','새친구 선물','전도 간식','홍보물 제작'],'행사비':['수련회','야유회','학생회 행사','송년회','특별행사'],'주일 간식비':['빵','음료','간식류']};
 const TABS=[['home','홈'],['inc','수입'],['exp','지출'],['due','교사회비'],['rep','월별보고서'],['set','설정·백업']];
-let S=null;try{S=JSON.parse(localStorage.getItem(KEY))}catch(e){}
-S=S||{opening:0,fee:10000,budget:{'전도비':300000,'행사비':500000,'주일 간식비':200000},teachers:[],income:[],expense:[],paid:{}};
+let S={opening:0,fee:10000,pin:'',budget:{},teachers:[],income:[],expense:[]};
+
 let admin=false,tab='home',FI={ym:'',cat:'',q:''},FE={ym:'',cat:'',q:''},repYm=null,dueYm=null;
 const $=s=>document.querySelector(s);
 function ask(msg,def,info,pw){return new Promise(res=>{const o=document.createElement('div');o.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:30;padding:16px';const inp=def!==undefined&&!info;
@@ -98,13 +100,33 @@ const nowYm=()=>td().slice(0,7);
 const ymL=m=>m.slice(0,4)+'년 '+(+m.slice(5))+'월';
 const md=d=>(+d.slice(5,7))+'/'+(+d.slice(8,10));
 const sum=(a,f)=>a.filter(f).reduce((s,x)=>s+x.amt,0);
-const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,6);
-function save(){try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){alert('저장 공간이 부족합니다. 영수증 사진이 많다면 설정에서 백업 후 정리해 주세요.')}}
+const uid=()=>crypto.randomUUID();
+const sb=supabase.createClient('https://plvztqkooqaildxirrrg.supabase.co','sb_publishable_C2G4JiO_Nvx_MCrF9eoVnQ_O8VHbJc7');
+let SNAP={income:{},expense:{},teachers:{},settings:''},Q=Promise.resolve();
+const rI=x=>({id:x.id,date:x.date,cat:x.cat,text:x.text||'',amt:x.amt,who:x.who||'',note:x.note||'',tid:x.tid||null,ym:x.ym||null});
+const rE=x=>({id:x.id,date:x.date,cat:x.cat,sub:x.sub||'',text:x.text||'',amt:x.amt,who:x.who||'',note:x.note||'',img_path:x.img&&!x.img.startsWith('data:')?x.img:null});
+const rT=t=>({id:t.id,name:t.name});
+const rS=()=>({id:1,opening:S.opening,fee:S.fee,pin:S.pin||''});
+function snapAll(){const m=(L,f)=>Object.fromEntries(L.map(x=>[x.id,JSON.stringify(f(x))]));SNAP={income:m(S.income,rI),expense:m(S.expense,rE),teachers:m(S.teachers,rT),settings:JSON.stringify(rS())}}
+async function load(){const r=await Promise.all([sb.from('income').select('*'),sb.from('expense').select('*'),sb.from('teachers').select('*').order('created_at'),sb.from('settings').select('*').eq('id',1).single()]);
+const er=r.find(x=>x.error);if(er)throw er.error;const d=r[3].data;
+S={opening:+d.opening,fee:+d.fee,pin:d.pin||'',budget:{},teachers:r[2].data,income:r[0].data.map(x=>({...x,amt:+x.amt,tid:x.tid||undefined})),expense:r[1].data.map(x=>({...x,amt:+x.amt,img:x.img_path||''}))};snapAll()}
+async function syncT(name,rows){const old=SNAP[name],cur=Object.fromEntries(rows.map(x=>[x.id,JSON.stringify(x)]));
+const ins=rows.filter(x=>!old[x.id]),upd=rows.filter(x=>old[x.id]&&old[x.id]!==cur[x.id]),del=Object.keys(old).filter(id=>!cur[id]);
+if(ins.length){const e=(await sb.from(name).insert(ins)).error;if(e)throw e}
+if(upd.length){const e=(await sb.from(name).upsert(upd)).error;if(e)throw e}
+if(del.length){if(name==='expense'){const ps=del.map(id=>JSON.parse(old[id]).img_path).filter(Boolean);if(ps.length)await sb.storage.from('receipts').remove(ps)}const e=(await sb.from(name).delete().in('id',del)).error;if(e)throw e}}
+async function sync(){for(const x of S.expense){if(x.img&&x.img.startsWith('data:')){const b=await (await fetch(x.img)).blob(),p=x.id+'.jpg',e=(await sb.storage.from('receipts').upload(p,b,{contentType:'image/jpeg',upsert:true})).error;if(e)throw e;x.img=p}}
+await syncT('teachers',S.teachers.map(rT));await syncT('income',S.income.map(rI));await syncT('expense',S.expense.map(rE));
+if(JSON.stringify(rS())!==SNAP.settings){const e=(await sb.from('settings').update({opening:S.opening,fee:S.fee,pin:S.pin||''}).eq('id',1)).error;if(e)throw e}
+snapAll()}
+function save(){Q=Q.then(sync).catch(async e=>{alert('저장에 실패했습니다. 최신 데이터를 다시 불러옵니다. ('+(e.message||e)+')');try{await load();render()}catch(_){}});return Q}
+async function refresh(){await Q;try{await load();render()}catch(e){}}
 const totalBal=()=>S.opening+sum(S.income,()=>1)-sum(S.expense,()=>1);
 const catUsed=c=>sum(S.expense,x=>x.cat===c);
 
 function nav(){$('#nav').innerHTML=TABS.map(t=>`<button class="${tab===t[0]?'on':''}" onclick="go('${t[0]}')">${t[1]}</button>`).join('')}
-function go(t){tab=t;nav();render();window.scrollTo(0,0)}
+function go(t){tab=t;nav();render();window.scrollTo(0,0);refresh()}
 function render(){$('#app').innerHTML=P[tab]();$('#today').textContent=td().replace(/-/g,'.');$('#adm').textContent=admin?'관리자 모드 끄기':'관리자 로그인'}
 
 function bars(){return CATS.map(c=>{const b=S.budget[c]||0,u=catUsed(c),p=b?Math.round(u/b*100):0;
@@ -162,7 +184,7 @@ function readImg(f){return new Promise(r=>{const fr=new FileReader();fr.onload=(
 async function addExp(){const a=+$('#e_a').value;if(!(a>0)||!$('#e_d').value)return alert('날짜와 금액을 입력해 주세요.');
 const f=$('#e_f').files[0],img=f?await readImg(f):'';
 S.expense.push({id:uid(),date:$('#e_d').value,cat:$('#e_c').value,sub:$('#e_s').value,text:$('#e_t').value.trim(),amt:a,who:$('#e_w').value.trim(),note:$('#e_n').value.trim(),img});save();render();if(tab==='exp')subOpts()}
-function showImg(id){const x=S.expense.find(e=>e.id===id);if(!x)return;$('#mimg').src=x.img;$('#modal').style.display='flex'}
+async function showImg(id){const x=S.expense.find(e=>e.id===id);if(!x)return;let u=x.img;if(!u.startsWith('data:')){const r=await sb.storage.from('receipts').createSignedUrl(u,300);if(r.error)return alert('영수증을 불러오지 못했습니다.');u=r.data.signedUrl}$('#mimg').src=u;$('#modal').style.display='flex'}
 async function del(t,id){if(!need())return;if(!await ask('이 내역을 삭제할까요?'))return;const k=t==='i'?'income':'expense';S[k]=S[k].filter(x=>x.id!==id);save();render()}
 
 P.due=()=>{dueYm=dueYm||nowYm();const y=dueYm.slice(0,4),paidN=S.teachers.filter(t=>isPaid(t.id,dueYm)),un=S.teachers.filter(t=>!isPaid(t.id,dueYm));
@@ -244,7 +266,7 @@ P.set=()=>!admin?`<div class="card"><h2>관리자 전용</h2><p style="margin-to
 <label>월 교사회비 (1인)<input type="number" id="s_f" value="${S.fee}"></label><div></div>
 
 <div class="full"><button class="b" onclick="saveSet()">설정 저장</button></div></div></div>
-<div class="card"><h2>데이터 백업</h2><p style="margin-top:0;color:var(--mute)">이 장부는 지금 사용 중인 기기의 브라우저에 저장됩니다. 정기적으로 백업해 두세요. 다른 기기에서는 백업 파일을 가져오기 하면 됩니다.</p>
+<div class="card"><h2>데이터 백업</h2><p style="margin-top:0;color:var(--mute)">장부 데이터는 Supabase 서버에 저장되어 모든 교사가 같은 내용을 봅니다. 그래도 정기적으로 JSON 백업을 받아 두세요. (영수증 사진 파일은 백업 파일에 포함되지 않고 서버에 남아 있습니다.)</p>
 <div class="btns"><button class="b" onclick="expJson()">JSON 내보내기</button><button class="b g" onclick="expXlsx()">엑셀 다운로드</button><label class="b g" style="cursor:pointer;margin:0;display:inline-block">데이터 가져오기<input type="file" accept=".json" style="display:none" onchange="impJson(this.files[0])"></label></div>
 <div style="margin-top:18px"><button class="b r" onclick="resetAll()">모든 데이터 지우기</button></div></div>`;
 function saveSet(){S.opening=+$('#s_o').value||0;S.fee=+$('#s_f').value||0;save();alert('저장되었습니다.')}
@@ -258,11 +280,17 @@ const r=(L,i)=>L.sort((a,b)=>a.date.localeCompare(b.date)).map(x=>({날짜:x.dat
 XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(r(S.income,1)),'수입');XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(r(S.expense,0)),'지출');
 XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(S.teachers.map(t=>({교사:t.name}))),'교사');
 dl(`교사회계_${td()}.xlsx`,XLSX.write(wb,{type:'array',bookType:'xlsx'}))}
-function impJson(f){if(!f)return;const r=new FileReader();r.onload=async()=>{try{const o=JSON.parse(r.result);if(!Array.isArray(o.income)||!Array.isArray(o.expense))throw 0;if(!await ask('현재 데이터가 백업 파일 내용으로 바뀝니다. 계속할까요?'))return;S=Object.assign({opening:0,fee:10000,budget:{},teachers:[],paid:{}},o,{pin:S.pin});save();render();alert('가져오기가 완료되었습니다.')}catch(e){alert('올바른 백업 파일이 아닙니다.')}};r.readAsText(f)}
-async function resetAll(){if(await ask('모든 수입·지출·교사 데이터가 삭제됩니다. 정말 지울까요?')&&await ask('되돌릴 수 없습니다. 백업하셨나요?')){localStorage.removeItem(KEY);location.reload()}}
+function impJson(f){if(!f)return;const r=new FileReader();r.onload=async()=>{try{const o=JSON.parse(r.result);if(!Array.isArray(o.income)||!Array.isArray(o.expense))throw 0;if(!await ask('현재 데이터가 백업 파일 내용으로 바뀝니다. 계속할까요?'))return;const tm={};S.teachers=(o.teachers||[]).map(t=>{tm[t.id]=uid();return {id:tm[t.id],name:t.name}});S.income=o.income.map(x=>({...x,id:uid(),tid:x.tid?tm[x.tid]:undefined}));S.expense=o.expense.map(x=>({...x,id:uid(),img:x.img||''}));S.opening=+o.opening||0;S.fee=+o.fee||S.fee;save();render();alert('가져오기가 완료되었습니다.')}catch(e){alert('올바른 백업 파일이 아닙니다.')}};r.readAsText(f)}
+async function resetAll(){if(await ask('모든 수입·지출·교사 데이터가 삭제됩니다. 정말 지울까요?')&&await ask('되돌릴 수 없습니다. 백업하셨나요?')){S.income=[];S.expense=[];S.teachers=[];save();render()}}
 
 nav();render();if(tab==='exp')subOpts();
 const _r=render;render=function(){_r();if(tab==='exp')subOpts()};
+function showLogin(m){$('#login').style.display='flex';$('#lg_m').textContent=m||''}
+async function boot(){const {data}=await sb.auth.getSession();if(!data.session)return showLogin();try{await load();$('#login').style.display='none';render()}catch(e){showLogin('데이터를 불러오지 못했습니다. SQL 설정을 확인해 주세요. ('+(e.message||e)+')')}}
+async function doLogin(){const r=await sb.auth.signInWithPassword({email:$('#lg_e').value.trim(),password:$('#lg_p').value});if(r.error)return showLogin('이메일 또는 비밀번호가 맞지 않습니다.');$('#lg_p').value='';boot()}
+async function logout(){await sb.auth.signOut();S={opening:0,fee:10000,pin:'',budget:{},teachers:[],income:[],expense:[]};admin=false;render();showLogin()}
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&['home','due','rep'].includes(tab)&&$('#login').style.display==='none')refresh()});
+boot();
 </script>
 </body>
 </html>
